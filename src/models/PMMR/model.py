@@ -12,6 +12,8 @@ def get_kernel_func(data_name: str) -> Tuple[AbsKernel, AbsKernel, AbsKernel, Ab
         return BinaryKernel(), GaussianKernel(), GaussianKernel(), GaussianKernel()
     elif data_name == "deaner":
         return GaussianKernel(), GaussianKernel(), GaussianKernel(), GaussianKernel()
+    elif data_name == "bench":
+        return BinaryKernel(), ColumnWiseGaussianKernel(), ColumnWiseGaussianKernel(), ColumnWiseGaussianKernel()
     else:
         return ColumnWiseGaussianKernel(), ColumnWiseGaussianKernel(), ColumnWiseGaussianKernel(), ColumnWiseGaussianKernel()
 
