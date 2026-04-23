@@ -34,6 +34,7 @@ class KernelPVModel:
     w_mean_vec: np.ndarray
     train_treatment: np.ndarray
     train_outcome_proxy: np.ndarray
+    train_backdoor: Optional[np.ndarray]
 
     def __init__(self, split_ratio: float, lam1=None, lam2=None, lam1_max=None, lam1_min=None,
                  n_lam1_search=None, lam2_max=None, lam2_min=None, n_lam2_search=None,
@@ -49,6 +50,7 @@ class KernelPVModel:
         self.scale: float = scale
         self.split_ratio: float = split_ratio
         self.x_mean_vec = None
+        self.train_backdoor = None
 
     def cal_kernel_mat_ZAX(self, data1: PVTrainDataSet, data2: PVTrainDataSet):
         kernel_mat = self.treatment_kernel_func.cal_kernel_mat(data1.treatment, data2.treatment)
@@ -117,6 +119,7 @@ class KernelPVModel:
                                                               train_data_2nd.backdoor)
             kernel_mat_2nd = Hadamard_prod(kernel_mat_2nd, K_X2X2)
             self.x_mean_vec = np.mean(K_X2X2, axis=0)[:, np.newaxis]
+            self.train_backdoor = train_data_2nd.backdoor
 
         Sigma = g_kw1_g * kernel_mat_2nd
 
@@ -130,10 +133,14 @@ class KernelPVModel:
         self.train_treatment = train_data_2nd.treatment
         self.train_outcome_proxy = train_data_1st.outcome_proxy
 
-    def predict(self, treatment: np.ndarray) -> np.ndarray:
-
+    def predict(self, treatment: np.ndarray, backdoor: Optional[np.ndarray] = None) -> np.ndarray:
         test_kernel = self.treatment_kernel_func.cal_kernel_mat(self.train_treatment, treatment)
-        if self.x_mean_vec is not None:
+        if backdoor is not None:
+            if self.train_backdoor is None:
+                raise ValueError("Model was trained without backdoor variables; cannot predict CATE")
+            backdoor_kernel = self.backdoor_kernel_func.cal_kernel_mat(self.train_backdoor, backdoor)
+            test_kernel = test_kernel * backdoor_kernel
+        elif self.x_mean_vec is not None:
             test_kernel = test_kernel * self.x_mean_vec
         pred = jnp.asarray(mat_mul(mat_mul(self.w_mean_vec.T, self.alpha), test_kernel)).T
         return pred
@@ -149,7 +156,8 @@ class KernelPVModel:
         return pred
 
     def evaluate(self, test_data: PVTestDataSet):
-        pred = self.predict(treatment=test_data.treatment)
+        pred = self.predict(treatment=test_data.treatment,
+                            backdoor=getattr(test_data, 'backdoor', None))
         return np.mean((pred - test_data.structural) ** 2)
 
 
@@ -165,7 +173,8 @@ def kpv_experiments(data_config: Dict[str, Any], model_param: Dict[str, Any],
 
     model = KernelPVModel(**model_param)
     model.fit(train_data, data_config["name"])
-    pred = model.predict(test_data.treatment)
+    pred = model.predict(test_data.treatment,
+                         backdoor=getattr(test_data, 'backdoor', None))
     pred = preprocessor.postprocess_for_prediction(pred)
     np.savetxt(one_mdl_dump_dir.joinpath(f"{random_seed}.pred.txt"), pred)
     if test_data.structural is not None:

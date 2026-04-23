@@ -29,12 +29,14 @@ class PMMRModel:
     w_mean_vec: np.ndarray
     train_treatment: np.ndarray
     train_outcome_proxy: np.ndarray
+    train_backdoor: Optional[np.ndarray]
 
     def __init__(self, lam1, lam2=0.0001, scale=1.0, **kwargs):
         self.lam1 = lam1
         self.lam2 = lam2
         self.scale = scale
         self.x_mean_vec = None
+        self.train_backdoor = None
 
     def fit(self, train_data: PVTrainDataSet, data_name: str):
         kernels = get_kernel_func(data_name)
@@ -63,6 +65,7 @@ class PMMRModel:
             backdoor_mat = self.backdoor_kernel_func.cal_kernel_mat(train_data.backdoor,
                                                                     train_data.backdoor)
             self.x_mean_vec = np.mean(backdoor_mat, axis=0)[:, np.newaxis]
+            self.train_backdoor = train_data.backdoor
         W = treatment_mat * treatment_proxy_mat * backdoor_mat
         L = treatment_mat * outcome_proxy_mat * backdoor_mat
         self.alpha = np.linalg.solve(L @ W @ L + self.lam1 * n_train * L + self.lam2 * n_train * np.eye(n_train),
@@ -71,10 +74,15 @@ class PMMRModel:
         self.train_treatment = train_data.treatment
         self.train_outcome_proxy = train_data.outcome_proxy
 
-    def predict(self, treatment: np.ndarray) -> np.ndarray:
+    def predict(self, treatment: np.ndarray, backdoor: Optional[np.ndarray] = None) -> np.ndarray:
         test_kernel = self.treatment_kernel_func.cal_kernel_mat(self.train_treatment, treatment)
         test_kernel *= self.w_mean_vec
-        if self.x_mean_vec is not None:
+        if backdoor is not None:
+            if self.train_backdoor is None:
+                raise ValueError("Model was trained without backdoor variables; cannot predict CATE")
+            backdoor_kernel = self.backdoor_kernel_func.cal_kernel_mat(self.train_backdoor, backdoor)
+            test_kernel = test_kernel * backdoor_kernel
+        elif self.x_mean_vec is not None:
             test_kernel = test_kernel * self.x_mean_vec
 
         pred = self.alpha.T @ test_kernel
@@ -88,7 +96,8 @@ class PMMRModel:
         return pred.T
 
     def evaluate(self, test_data: PVTestDataSet):
-        pred = self.predict(treatment=test_data.treatment)
+        pred = self.predict(treatment=test_data.treatment,
+                            backdoor=getattr(test_data, 'backdoor', None))
         return np.mean((pred - test_data.structural) ** 2)
 
 
@@ -104,7 +113,8 @@ def pmmr_experiments(data_config: Dict[str, Any], model_param: Dict[str, Any],
 
     model = PMMRModel(**model_param)
     model.fit(train_data, data_config["name"])
-    pred = model.predict(test_data.treatment)
+    pred = model.predict(test_data.treatment,
+                         backdoor=getattr(test_data, 'backdoor', None))
     pred = preprocessor.postprocess_for_prediction(pred)
     np.savetxt(one_mdl_dump_dir.joinpath(f"{random_seed}.pred.txt"), pred)
     if test_data.structural is not None:
